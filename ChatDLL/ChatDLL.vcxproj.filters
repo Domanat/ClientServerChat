@@ -23,7 +23,7 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="dllmain.cpp">
+    <ClCompile Include="dllmain.hpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

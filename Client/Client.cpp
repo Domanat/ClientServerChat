@@ -4,27 +4,23 @@
 #include <string>
 #include <thread>
 #include <memory>
+#include "dllmain.hpp"
 
 class Client
 {
 public:
-	Client(boost::asio::io_context& context, std::string ip, int portNumber) :
+	Client(boost::asio::io_context& context, std::shared_ptr<Chat>&ch, std::string ip, int portNumber) :
 		ioContext(context),
+		chat(ch),
 		ipAddr(ip),
 		port(portNumber)
 	{
 		work.reset(new boost::asio::io_context::work(ioContext));
 		socket.reset(new boost::asio::ip::tcp::socket(ioContext));
 
-		/*for (int i = 0; i < numberOfThreads; i++)
-		{
-			std::unique_ptr<std::thread> th = std::make_unique<std::thread>([this]() {
-				ioContext.run();
-				});
-
-			threads.push_back(std::move(th));
-		}*/
-
+		callbackThread.reset(new std::thread([this]() {
+			ioContext.run();
+		}));
 	}
 
 	void Start()
@@ -40,11 +36,14 @@ public:
 					return;
 				}
 
-		std::cout << "Connected Successfully" << std::endl;
+				std::cout << "Connected Successfully" << std::endl;
+				
+				chat->SetIsConnected(true);
+				chat->AddSystemText("Connected");
+				
+				OnConnected();
 
-		OnConnected();
-
-		writeThread.reset(new std::thread(&Client::WriteFunction, this));
+				writeThread.reset(new std::thread(&Client::WriteFunction, this));
 
 			});
 	}
@@ -70,15 +69,17 @@ public:
 					return;
 				}
 
-		std::istream input(&serverBuff);
-		std::getline(input, serverStr);
+				std::istream input(&serverBuff);
+				std::getline(input, serverStr);
 
-		std::cout << "Server: " << serverStr << std::endl;
+				chat->AddStrToDialog(chat->GetHwnd(), std::wstring(serverStr.begin(), serverStr.end()), L"Server");
 
-		if (isRunning)
-			OnConnected();
+				std::cout << "Server: " << serverStr << std::endl;
 
-		serverStr.clear();
+				if (isRunning)
+					OnConnected();
+
+				serverStr.clear();
 			});
 
 	}
@@ -92,16 +93,19 @@ private:
 
 	void WriteFunction()
 	{
+		{
+			std::unique_lock<std::mutex> lock(condMutex);
+			cv.wait(lock);
+		}
+		
+		std::wstring text = chat->GetEnteredText();
+		std::string singleStr(text.begin(), text.end());
+		
+		clientStr.clear();
+		clientStr = singleStr;
 
-		std::getline(std::cin, clientStr);
-
-		if (clientStr == prevClientStr)
-			return;
-
-		std::cout << "ClientStr: " << clientStr << std::endl;
-
+		std::cout << "Client: " << clientStr << std::endl;
 		clientStr += '\n';
-		prevClientStr = clientStr;
 
 		boost::asio::async_write(*socket.get(), boost::asio::buffer(clientStr),
 			[this](const boost::system::error_code& ec, std::size_t bytes)
@@ -112,8 +116,10 @@ private:
 					Stop();
 					return;
 				}
+				
+				std::cout << "Message written successfully: " << clientStr << std::endl;
 
-		WriteFunction();
+				WriteFunction();
 			});
 	}
 
@@ -135,11 +141,11 @@ private:
 	std::unique_ptr<boost::asio::ip::tcp::socket> socket;
 
 	std::unique_ptr<std::thread> writeThread;
-
+	std::unique_ptr<std::thread> callbackThread;
+	std::shared_ptr<Chat>& chat;
 	boost::asio::streambuf serverBuff;
 	std::string serverStr = "";
 	std::string clientStr = "";
-	std::string prevClientStr = "";
 
 	std::string ipAddr;
 	int port;
@@ -147,26 +153,32 @@ private:
 	std::atomic<bool> isRunning = true;
 };
 
-int main()
+int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR nCmdLine, int nCmdShow)
 {
+	std::shared_ptr<Chat> chat(std::make_shared<Chat>(hInstance, nCmdShow, L"ClientChat"));
+
 	boost::asio::io_context ioContext{ 2 };
+
+	Client client(ioContext, chat, "127.0.0.1", 3333);
 
 	try
 	{
-
-		Client client(ioContext, "127.0.0.1", 3333);
-		std::cout << "Client created" << std::endl;
 		client.Start();
+		// Start io processing thread
+		std::thread t([&ioContext]() {
+			ioContext.run();
+			}); // Maybe should use join instead of detach
+		// Start UI part
+		chat->Start();
 
-		ioContext.run();
-
-		client.Stop();
-
+		t.join();
 	}
 	catch (boost::system::system_error& ec)
 	{
-		std::cout << "Exception caught: " << ec.code() << std::endl;
-		return -1;
+		std::cout << "Error during connection: " << ec.code().message() << std::endl;
+
+		chat->SetIsConnected(false);
 	}
+
 	return 0;
 }
